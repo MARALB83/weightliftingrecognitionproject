@@ -1,0 +1,149 @@
+
+---
+title: "Weight Lifting Recognition"
+author: "Student: Mario Albuquerque"
+date: "Wednesday, August 20, 2014"
+output: html_document
+---
+
+```{r setoptions,include=FALSE}
+#options(echo=TRUE,scipen=1,digits=2)
+if(!require('caret')){install.packages('caret')}
+if(!require('doParallel')){install.packages('doParallel')}
+library(caret)
+library(doParallel)
+#Enable multi-core processing
+nrCores<-detectCores()
+cl<-makeCluster(nrCores)
+registerDoParallel(cl)
+```
+
+Abstract
+--
+
+A weight lifting classification problem is addressed in this analysis as to match a weight lifting repetition exercise to a set of 5 possible labels. Only one of them is the correct way of doing the exercise: the standard of weight lifting (label *A*). All the others are variants of common errors that practitioners do.
+The dataset used to build the machine learning model was the training partition of the weight lifting dataset used in this paper [[1]](#authors). 
+Given that this problem is closely related to identifying deviances from a standard way of lifting the weights, a rules-based C 5.0 algorithm, as well as tree-based (bagging trees and C 5.0 tree) algorithms were used to train the models. 
+The estimated out-of-sample error rate (100%-Accuracy) is low accross all models (averaged at 2.54%), and predictions from each model, given the out-of-sample testing dataset, converge to the same list of answers. All the predictions were correct, which is consistent with the error rates estimated as there should only be approximately 3 failures per 100 predictions.
+
+Data Processing
+--
+
+The data used for this analysis is the Weight Lifting Exercises Dataset as used in a qualitative activity recognition paper (in [[1]](#authors)). There are already 2 partitions: training (with 19622 observations) and testing (with 20 observations). It is assumed that the user already has downloaded the .csv files into the working directory.
+
+```{r loaddata}
+fullTraining<-read.csv('pml-training.csv')
+testing<-read.csv('pml-testing.csv')
+```
+
+The data has 160 columns with some of them having multiple invalid entries. A subset is taken where columns that have any invald entries are removed. The rationale to eliminate features instead of eliminating only records with invalid data is that, going forward, if there's a feature that cannot be measured (producing an invalid measurement), then it is not useful as an input to the model.
+
+Next, predictors that are zero-variance are removed using R's *nearZeroVar* function from the *caret* package. Variables that are near-zero variance can cause models to fail or make the fit unstable. The function identifies the near-zero variance predictors when both of the following metrics cross a predetermined threshold:
+
+1. The ratio of unique values to the number of total samples is below 0.2.
+2. The ratio of the most frequent value of a variable to the second most frequent value is above 20.
+
+Also, columns that, apriori, do not have a meaningful relationship with the variable to be predicted (*classe*) are removed: *X*, *user_name*,    *raw_timestamp_part_1*,    *raw_timestamp_part_2*,	*cvtd_timestamp*, and	*num_window*. The ability to do the exercise correctly should not depend on a counting variable like *X*, nor the name of the person (*user_name*). Arguably, the time-related variables should also not determine whether the exercise was correct or not, as being correct does not mean being able to do it faster or slower.
+
+```{r datamanipulation}
+fullTraining[fullTraining=='#DIV/0!']<-NA
+fullTraining<-fullTraining[,colSums(is.na(fullTraining))==0]
+nearzerovarPred<-nearZeroVar(x = fullTraining[,-ncol(fullTraining)],freqCut = 20,uniqueCut = 20)
+fullTraining<-fullTraining[,-nearzerovarPred]
+dropVariables=c('X','user_name','raw_timestamp_part_1','raw_timestamp_part_2','cvtd_timestamp', 'num_window')
+fullTraining<-fullTraining[,!(names(fullTraining) %in% dropVariables)]
+```
+
+The resulting training data set has `r nrow(fullTraining)` rows with `r ncol(fullTraining)-1` features that can be used in a machine learning algorithm.
+
+Model Building
+--
+
+The underlying problem being addressed here is related to movement in physical space. More specifically, the classification of a sequence of movements according to a standard of weight lifting. Given this initial description, rules-based or tree-based models should be able to classify each movement with high accuracy, because the correct standard of lifting a weight has a very specific set of sensor readings, across multiple locations (belt, arm, etc.) and dimensions (x,y,z). If certain measurements fall outside of that pattern, on any location or dimension, the model should easily pick up that deviance and correctly predict which type of error is occurring, as the 5 labels correspond to different uniquely identified movements.
+Given the previous point, the following rules/tree-based models were applied:
+
+1. Bagging Tree (*treebag*)
+2. C 5.0 Rules (*C5.0Rules*)
+3. C 5.0 Tree (*C5.0Tree*)
+
+For each model, the rules/parameters are trained using 10-fold cross-validation on the training set. Given that this is a classification problem, the metric used to evaluate each iteration is the cross-validated accuracy. 
+
+```{r modelbuilding,cache=TRUE}
+set.seed(777)
+treebagFit<-train(y = fullTraining$classe,x=fullTraining[,-ncol(fullTraining)],method='treebag',trControl = trainControl(method = 'cv',number = 10))
+CrulesFit<-train(y = fullTraining$classe,x=fullTraining[,-ncol(fullTraining)],method='C5.0Rules',trControl = trainControl(method = 'cv',number = 10))
+CtreeFit<-train(y = fullTraining$classe,x=fullTraining[,-ncol(fullTraining)],method='C5.0Tree',trControl = trainControl(method = 'cv',number = 10))
+```
+
+Model Results
+--
+
+The following table reports each model's error rate, defined as $100\%-Accuracy$:
+
+Model|Error
+---|---
+Bagging Tree|`r paste(round((1-treebagFit$results[2])*100,2),'%',sep='')`
+C 5.0 Rules|`r paste(round((1-CrulesFit$results[2])*100,2),'%',sep='')`
+C 5.0 Tree|`r paste(round((1-CtreeFit$results[2])*100,2),'%',sep='')`
+
+All models report very low errors (high accuracies). The following plot shows the most important features for each model:
+
+```{r vaimpplot,fig.width=10}
+#Create data frame so that plots can be stacked side-by-side
+treebagFitvarImp<-data.frame('Feature'=row.names(varImp(treebagFit)$importance),'Importance'=varImp(treebagFit)$importance$Overall)
+CrulesFitvarImp<-data.frame('Feature'=row.names(varImp(CrulesFit)$importance),'Importance'=varImp(CrulesFit)$importance$Overall)
+CtreeFitvarImp<-data.frame('Feature'=row.names(varImp(CtreeFit)$importance),'Importance'=varImp(CtreeFit)$importance$Overall)
+#Sort
+treebagFitvarImp<-treebagFitvarImp[with(treebagFitvarImp, order(-Importance)),]
+CrulesFitvarImp<-CrulesFitvarImp[with(CrulesFitvarImp, order(-Importance)),]
+CtreeFitvarImp<-CtreeFitvarImp[with(CtreeFitvarImp, order(-Importance)),]
+#Plot top10
+par(mfrow=c(1,3))
+dotchart(x = treebagFitvarImp$Importance[10:1],labels=treebagFitvarImp$Feature[10:1],main='Top10 Features: Bagging Tree model',color = 'darkblue',lcolor = 'red',xlab = 'Importance',,cex=0.6)
+dotchart(x = CrulesFitvarImp$Importance[10:1],labels=CrulesFitvarImp$Feature[10:1],main='Top10 Features: C 5.0 Rules model',color = 'darkblue',lcolor = 'red',xlab = 'Importance',cex=0.6)
+dotchart(x = CtreeFitvarImp$Importance[10:1],labels=CtreeFitvarImp$Feature[10:1],main='Top10 Features: C 5.0 Tree model',color = 'darkblue',lcolor = 'red',xlab = 'Importance',cex=0.6)
+```
+
+It is interesting to see that *roll_belt* is the most important feature accross all models. Also, *yaw_belt* appears in the top3 across all models. 
+There might be ways to simplify these models using a reduced subset of the most important features. This will help scalability.
+Accross all models, there's a 40% overlap: 6 common features divided by 15 unique features on the top10 across all models.
+
+Model Predictions
+--
+
+Given the 3 models trained in the previous section, it is time to put them to a test. The *testing* dataset consists of `r nrow(testing)` observations that need to be classified. 
+
+```{r predictnewdata}
+answers<-data.frame('Point'=1:20,'BaggingTree'=predict(treebagFit,testing),'Crules'=predict(CrulesFit,testing),'Ctree'=predict(CtreeFit,testing))
+```
+
+The following table shows the predictions from each model, accross the new 20 data points:
+
+Point|Bagging Tree|C 5.0 rules|C 5.0 Tree
+---|---|---|---
+1|`r answers[1,2]`|`r answers[1,3]`|`r answers[1,4]`
+2|`r answers[2,2]`|`r answers[2,3]`|`r answers[2,4]`
+3|`r answers[3,2]`|`r answers[3,3]`|`r answers[3,4]`
+4|`r answers[4,2]`|`r answers[4,3]`|`r answers[4,4]`
+5|`r answers[5,2]`|`r answers[5,3]`|`r answers[5,4]`
+6|`r answers[6,2]`|`r answers[6,3]`|`r answers[6,4]`
+7|`r answers[7,2]`|`r answers[7,3]`|`r answers[7,4]`
+8|`r answers[8,2]`|`r answers[8,3]`|`r answers[8,4]`
+9|`r answers[9,2]`|`r answers[9,3]`|`r answers[9,4]`
+10|`r answers[10,2]`|`r answers[10,3]`|`r answers[10,4]`
+11|`r answers[11,2]`|`r answers[11,3]`|`r answers[11,4]`
+12|`r answers[12,2]`|`r answers[12,3]`|`r answers[12,4]`
+13|`r answers[13,2]`|`r answers[13,3]`|`r answers[13,4]`
+14|`r answers[14,2]`|`r answers[14,3]`|`r answers[14,4]`
+15|`r answers[15,2]`|`r answers[15,3]`|`r answers[15,4]`
+16|`r answers[16,2]`|`r answers[16,3]`|`r answers[16,4]`
+17|`r answers[17,2]`|`r answers[17,3]`|`r answers[17,4]`
+18|`r answers[18,2]`|`r answers[18,3]`|`r answers[18,4]`
+19|`r answers[19,2]`|`r answers[19,3]`|`r answers[19,4]`
+20|`r answers[20,2]`|`r answers[20,3]`|`r answers[20,4]`
+
+All the models agree on every testing data point classification (converging evidence).  After uploading them into the Coursera submission website, the predictions were all correct.
+
+Citations
+--
+<a name='authors'></a>Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
